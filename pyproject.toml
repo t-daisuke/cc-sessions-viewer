@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-session-viewer"
+version = "0.1.0"
+description = "A TUI viewer for Claude Code session logs"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.40.0",
+]
+
+[project.scripts]
+claude-sessions = "app:main"
