@@ -134,6 +134,7 @@ impl App {
         }
         let project = &self.displayed_projects[self.selected_project];
         self.current_project_name = project.dir_name.clone();
+        self.search_query.clear();
         self.sessions = parser::list_sessions(&project.dir_name).unwrap_or_default();
         self.apply_filter();
         self.selected_session = 0;
