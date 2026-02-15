@@ -1,6 +1,6 @@
 [package]
 name = "cc-sessions-viewer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A terminal UI application for browsing Claude Code session history"
 license = "MIT"
