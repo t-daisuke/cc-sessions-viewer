@@ -42,7 +42,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -59,7 +59,7 @@ jobs:
     if: ${{ !contains(github.ref_name, 'beta') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
       - name: Generate and push Formula
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
