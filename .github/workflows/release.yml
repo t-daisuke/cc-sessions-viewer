@@ -32,7 +32,7 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../cc-sessions-viewer-${{ matrix.target }}.tar.gz cc-sessions-viewer
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: cc-sessions-viewer-${{ matrix.target }}
           path: cc-sessions-viewer-${{ matrix.target }}.tar.gz
