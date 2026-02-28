@@ -62,14 +62,39 @@ Use `/` to fuzzy-search across project paths or session previews:
 └────────────────────────────────────────────────────────────────┘
 ```
 
+### Global Search
+
+Press `s` from the project list to open **Global Search** — a cross-project full-text search over all session prompts.
+
+初回起動時にSQLiteインデックスを自動構築し（`~/.claude/projects/` 配下を並列スキャン）、2回目以降は差分のみ更新するため高速に起動します。
+
+```
+ Claude Session Viewer
+ Search: JWT認証█
+┌ Global Search (2 results) ────────────────────────────────┐
+│ Time     Project       Branch      Prompt                  │
+│ 14:30    api-server    feat/auth   ...Add JWT認証 to the...│
+│ Feb 10   web-app       main        ...JWT認証フローの実装...│
+└────────────────────────────────────────────────────────────┘
+Enter: Detail  y: Copy resume cmd  Esc: Back  j/k: Navigate
+```
+
+- **リアルタイム絞り込み** — 1文字入力するごとに結果が即座に更新されます
+- **大文字小文字を無視** — `jwt` でも `JWT` でもマッチします
+- **マッチハイライト** — 一致したテキストが黄色でハイライトされ、前後のコンテキストが `...` 付きで表示されます
+- **セッション復帰** — 結果を選んで `y` を押すと `claude --resume <session-id>` コマンドがクリップボードにコピーされ、すぐにそのセッションを再開できます
+- **詳細表示** — `Enter` でそのセッションの会話全文を閲覧できます
+
 ## Features
 
 - Browse projects and sessions under `~/.claude/projects/`
 - Three-screen navigation: Project List -> Session List -> Session Detail
-- Fuzzy search with `/` key (powered by [skim](https://github.com/lotabout/fuzzy-matcher))
+- **Global Search** (`s` key) — substring search across all session prompts with match highlighting
+- Fuzzy search with `/` key for project/session filtering (powered by [skim](https://github.com/lotabout/fuzzy-matcher))
 - Time filter: Yesterday / Week / Month / All
 - Color-coded messages by role (User, Assistant, Tool, Result, System)
 - Vim-style keybindings
+- Auto-scrolling tables — selected row always stays visible
 
 ## Installation
 
@@ -112,6 +137,8 @@ cargo run --release
 | `u` | Half page up |
 | `g` | Go to top |
 | `G` | Go to bottom |
+| `s` | Global Search across all sessions (Project list) |
+| `y` | Copy `claude --resume` command (Global Search) |
 | `/` | Fuzzy search (Project / Session list) |
 | `Tab` | Next time filter (Session list) |
 | `Shift+Tab` | Previous time filter (Session list) |
@@ -121,6 +148,9 @@ cargo run --release
 - [ratatui](https://github.com/ratatui/ratatui) - TUI framework
 - [crossterm](https://github.com/crossterm-rs/crossterm) - Terminal backend
 - [fuzzy-matcher](https://github.com/lotabout/fuzzy-matcher) - Fuzzy search
+- [rusqlite](https://github.com/rusqlite/rusqlite) - SQLite session index
+- [rayon](https://github.com/rayon-rs/rayon) - Parallel indexing
+- [cli-clipboard](https://github.com/nicohman/rust-clipboard) - Clipboard support
 - [serde](https://github.com/serde-rs/serde) / [serde_json](https://github.com/serde-rs/json) - JSON parsing
 - [chrono](https://github.com/chronotope/chrono) - Date/time handling
 - [dirs](https://github.com/dirs-dev/dirs-rs) - Home directory resolution

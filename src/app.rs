@@ -19,6 +19,7 @@ pub enum Screen {
     ProjectList,
     SessionList,
     SessionDetail,
+    GlobalSearch,
 }
 
 pub struct App {
@@ -37,6 +38,24 @@ pub struct App {
     pub terminal_height: usize,
     pub search_active: bool,
     pub search_query: String,
+    pub global_search_results: Vec<SearchResult>,
+    pub global_search_filtered: Vec<SearchResult>,
+    pub global_search_query: String,
+    pub global_search_selected: usize,
+    pub project_scroll_offset: usize,
+    pub session_scroll_offset: usize,
+    pub global_search_scroll_offset: usize,
+}
+
+fn ensure_visible(selected: usize, scroll_offset: &mut usize, visible_height: usize) {
+    if visible_height == 0 {
+        return;
+    }
+    if selected < *scroll_offset {
+        *scroll_offset = selected;
+    } else if selected >= *scroll_offset + visible_height {
+        *scroll_offset = selected - visible_height + 1;
+    }
 }
 
 impl App {
@@ -59,6 +78,13 @@ impl App {
             terminal_height: 24,
             search_active: false,
             search_query: String::new(),
+            global_search_results: Vec::new(),
+            global_search_filtered: Vec::new(),
+            global_search_query: String::new(),
+            global_search_selected: 0,
+            project_scroll_offset: 0,
+            session_scroll_offset: 0,
+            global_search_scroll_offset: 0,
         }
     }
 
@@ -81,6 +107,13 @@ impl App {
             terminal_height: 24,
             search_active: false,
             search_query: String::new(),
+            global_search_results: Vec::new(),
+            global_search_filtered: Vec::new(),
+            global_search_query: String::new(),
+            global_search_selected: 0,
+            project_scroll_offset: 0,
+            session_scroll_offset: 0,
+            global_search_scroll_offset: 0,
         }
     }
 
@@ -128,6 +161,25 @@ impl App {
         }
     }
 
+    fn ensure_table_scroll(&mut self) {
+        let th = self.terminal_height;
+        match self.screen {
+            Screen::ProjectList => {
+                let vh = th.saturating_sub(5);
+                ensure_visible(self.selected_project, &mut self.project_scroll_offset, vh);
+            }
+            Screen::SessionList => {
+                let vh = th.saturating_sub(7);
+                ensure_visible(self.selected_session, &mut self.session_scroll_offset, vh);
+            }
+            Screen::GlobalSearch => {
+                let vh = th.saturating_sub(6);
+                ensure_visible(self.global_search_selected, &mut self.global_search_scroll_offset, vh);
+            }
+            Screen::SessionDetail => {}
+        }
+    }
+
     pub fn enter_session_list(&mut self) {
         if self.displayed_projects.is_empty() {
             return;
@@ -138,6 +190,7 @@ impl App {
         self.sessions = parser::list_sessions(&project.dir_name).unwrap_or_default();
         self.apply_filter();
         self.selected_session = 0;
+        self.session_scroll_offset = 0;
         self.scroll_offset = 0;
         self.screen = Screen::SessionList;
     }
@@ -165,12 +218,19 @@ impl App {
             Screen::SessionList => {
                 self.screen = Screen::ProjectList;
                 self.selected_session = 0;
+                self.session_scroll_offset = 0;
                 self.scroll_offset = 0;
                 self.displayed_projects = self.projects.clone(); // リセット
             }
             Screen::SessionDetail => {
                 self.screen = Screen::SessionList;
                 self.scroll_offset = 0;
+            }
+            Screen::GlobalSearch => {
+                self.screen = Screen::ProjectList;
+                self.global_search_query.clear();
+                self.global_search_selected = 0;
+                self.global_search_scroll_offset = 0;
             }
         }
     }
@@ -192,7 +252,13 @@ impl App {
                     self.scroll_offset -= 1;
                 }
             }
+            Screen::GlobalSearch => {
+                if self.global_search_selected > 0 {
+                    self.global_search_selected -= 1;
+                }
+            }
         }
+        self.ensure_table_scroll();
     }
 
     pub fn navigate_down(&mut self) {
@@ -212,7 +278,15 @@ impl App {
             Screen::SessionDetail => {
                 self.scroll_offset += 1;
             }
+            Screen::GlobalSearch => {
+                if !self.global_search_filtered.is_empty()
+                    && self.global_search_selected < self.global_search_filtered.len() - 1
+                {
+                    self.global_search_selected += 1;
+                }
+            }
         }
+        self.ensure_table_scroll();
     }
 
     pub fn half_page_down(&mut self) {
@@ -233,7 +307,14 @@ impl App {
             Screen::SessionDetail => {
                 self.scroll_offset += half;
             }
+            Screen::GlobalSearch => {
+                if !self.global_search_filtered.is_empty() {
+                    self.global_search_selected = (self.global_search_selected + half)
+                        .min(self.global_search_filtered.len() - 1);
+                }
+            }
         }
+        self.ensure_table_scroll();
     }
 
     pub fn half_page_up(&mut self) {
@@ -248,31 +329,43 @@ impl App {
             Screen::SessionDetail => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(half);
             }
+            Screen::GlobalSearch => {
+                self.global_search_selected = self.global_search_selected.saturating_sub(half);
+            }
         }
+        self.ensure_table_scroll();
     }
 
     pub fn cycle_filter_next(&mut self) {
         self.time_filter = self.time_filter.next();
         self.apply_filter();
         self.selected_session = 0;
+        self.session_scroll_offset = 0;
     }
 
     pub fn cycle_filter_prev(&mut self) {
         self.time_filter = self.time_filter.prev();
         self.apply_filter();
         self.selected_session = 0;
+        self.session_scroll_offset = 0;
     }
 
     pub fn go_to_top(&mut self) {
         match self.screen {
             Screen::ProjectList => {
                 self.selected_project = 0;
+                self.project_scroll_offset = 0;
             }
             Screen::SessionList => {
                 self.selected_session = 0;
+                self.session_scroll_offset = 0;
             }
             Screen::SessionDetail => {
                 self.scroll_offset = 0;
+            }
+            Screen::GlobalSearch => {
+                self.global_search_selected = 0;
+                self.global_search_scroll_offset = 0;
             }
         }
     }
@@ -281,6 +374,7 @@ impl App {
         self.sessions = sessions;
         self.apply_filter();
         self.selected_session = 0;
+        self.session_scroll_offset = 0;
         self.scroll_offset = 0;
         self.screen = Screen::SessionList;
     }
@@ -307,7 +401,13 @@ impl App {
                 // Scroll to a large value; the UI will clamp it
                 self.scroll_offset = usize::MAX / 2;
             }
+            Screen::GlobalSearch => {
+                if !self.global_search_filtered.is_empty() {
+                    self.global_search_selected = self.global_search_filtered.len() - 1;
+                }
+            }
         }
+        self.ensure_table_scroll();
     }
 
     /// 検索モードを開始（ProjectList/SessionListのみ）
@@ -362,11 +462,86 @@ impl App {
                 .collect();
         }
         self.selected_project = 0;
+        self.project_scroll_offset = 0;
 
         // SessionListの場合はfiltered_sessionsも再フィルタ
         if self.screen == Screen::SessionList {
             self.apply_filter();
+            self.session_scroll_offset = 0;
         }
+    }
+
+    pub fn enter_global_search(&mut self, results: Vec<SearchResult>) {
+        self.global_search_results = results.clone();
+        self.global_search_filtered = results;
+        self.global_search_query.clear();
+        self.global_search_selected = 0;
+        self.global_search_scroll_offset = 0;
+        self.screen = Screen::GlobalSearch;
+    }
+
+    pub fn global_search_push(&mut self, ch: char) {
+        self.global_search_query.push(ch);
+        self.apply_global_search();
+    }
+
+    pub fn global_search_pop(&mut self) {
+        self.global_search_query.pop();
+        self.apply_global_search();
+    }
+
+    fn apply_global_search(&mut self) {
+        if self.global_search_query.is_empty() {
+            self.global_search_filtered = self.global_search_results.clone();
+        } else {
+            let query = self.global_search_query.to_lowercase();
+            self.global_search_filtered = self
+                .global_search_results
+                .iter()
+                .filter_map(|r| {
+                    let mut best_prompt = String::new();
+                    let mut best_indices: Vec<usize> = Vec::new();
+                    let mut found = false;
+                    for prompt in &r.prompts {
+                        let lower = prompt.to_lowercase();
+                        if let Some(byte_pos) = lower.find(&query) {
+                            // byte position -> char index
+                            let char_start = lower[..byte_pos].chars().count();
+                            let char_len = query.chars().count();
+                            best_prompt = prompt.clone();
+                            best_indices = (char_start..char_start + char_len).collect();
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        // プロジェクト名・ブランチ名でもマッチを試す
+                        if r.project_path.to_lowercase().contains(&query)
+                            || r.git_branch.to_lowercase().contains(&query)
+                        {
+                            best_prompt = r.prompts.first().cloned().unwrap_or_default();
+                            found = true;
+                        }
+                    }
+                    if found {
+                        let mut result = r.clone();
+                        result.best_match_prompt = best_prompt;
+                        result.best_match_indices = best_indices;
+                        Some(result)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+        self.global_search_selected = 0;
+        self.global_search_scroll_offset = 0;
+    }
+
+    pub fn get_resume_command(&self) -> Option<String> {
+        self.global_search_filtered
+            .get(self.global_search_selected)
+            .map(|r| format!("claude --resume {}", r.session_id))
     }
 }
 
@@ -415,7 +590,41 @@ fn run_loop(
         })?;
 
         if let Event::Key(key) = event::read()? {
-            if app.search_active {
+            if app.screen == Screen::GlobalSearch {
+                match key.code {
+                    KeyCode::Esc => app.go_back(),
+                    KeyCode::Enter => {
+                        if let Some(result) =
+                            app.global_search_filtered.get(app.global_search_selected)
+                        {
+                            let dir_name = result.dir_name.clone();
+                            let session_id = result.session_id.clone();
+                            app.current_project_name = dir_name;
+                            if let Ok(msgs) =
+                                parser::load_session(&app.current_project_name, &session_id)
+                            {
+                                app.messages = msgs;
+                                app.scroll_offset = 0;
+                                app.screen = Screen::SessionDetail;
+                            }
+                        }
+                    }
+                    KeyCode::Char('y') => {
+                        if let Some(cmd) = app.get_resume_command() {
+                            let _ = cli_clipboard::set_contents(cmd);
+                        }
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => app.navigate_down(),
+                    KeyCode::Char('k') | KeyCode::Up => app.navigate_up(),
+                    KeyCode::Char('d') => app.half_page_down(),
+                    KeyCode::Char('u') => app.half_page_up(),
+                    KeyCode::Char('g') => app.go_to_top(),
+                    KeyCode::Char('G') => app.go_to_bottom(),
+                    KeyCode::Backspace => app.global_search_pop(),
+                    KeyCode::Char(c) => app.global_search_push(c),
+                    _ => {}
+                }
+            } else if app.search_active {
                 match key.code {
                     KeyCode::Esc => app.cancel_search(),
                     KeyCode::Enter => app.confirm_search(),
@@ -433,10 +642,37 @@ fn run_loop(
                     KeyCode::Char('/') => {
                         app.start_search();
                     }
+                    KeyCode::Char('s') => {
+                        if app.screen == Screen::ProjectList {
+                            if let Ok(db_path) = crate::indexer::build_default_index() {
+                                if let Ok(index) =
+                                    crate::index::SessionIndex::open(&db_path)
+                                {
+                                    if let Ok(sessions) = index.search_all() {
+                                        let results: Vec<SearchResult> = sessions
+                                            .into_iter()
+                                            .map(|s| SearchResult {
+                                                session_id: s.session_id,
+                                                project_path: s.project_path,
+                                                dir_name: s.dir_name,
+                                                git_branch: s.git_branch,
+                                                created_at: s.created_at,
+                                                prompts: s.prompts,
+                                                best_match_prompt: String::new(),
+                                                best_match_indices: Vec::new(),
+                                            })
+                                            .collect();
+                                        app.enter_global_search(results);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     KeyCode::Enter => match app.screen {
                         Screen::ProjectList => app.enter_session_list(),
                         Screen::SessionList => app.enter_session_detail(),
                         Screen::SessionDetail => {}
+                        Screen::GlobalSearch => {}
                     },
                     KeyCode::Char('j') | KeyCode::Down => {
                         app.navigate_down();
@@ -1153,6 +1389,77 @@ mod tests {
         }
         // displayed_projects のサイズを超えないこと
         assert!(app.selected_project < count);
+    }
+
+    // ===== GlobalSearch テスト =====
+
+    fn make_search_result(id: &str, prompts: Vec<&str>) -> SearchResult {
+        SearchResult {
+            session_id: id.to_string(),
+            project_path: format!("/path/{}", id),
+            dir_name: format!("dir-{}", id),
+            git_branch: "main".to_string(),
+            created_at: "2026-01-15T10:00:00Z".to_string(),
+            prompts: prompts.into_iter().map(String::from).collect(),
+            best_match_prompt: String::new(),
+            best_match_indices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn enter_global_search_from_project_list() {
+        let mut app = App::with_projects(vec![make_project("a")]);
+        assert_eq!(app.screen, Screen::ProjectList);
+        app.enter_global_search(vec![]);
+        assert_eq!(app.screen, Screen::GlobalSearch);
+    }
+
+    #[test]
+    fn global_search_go_back_returns_to_project_list() {
+        let mut app = App::with_projects(vec![make_project("a")]);
+        app.enter_global_search(vec![]);
+        assert_eq!(app.screen, Screen::GlobalSearch);
+        app.go_back();
+        assert_eq!(app.screen, Screen::ProjectList);
+    }
+
+    #[test]
+    fn global_search_fuzzy_filter() {
+        let mut app = App::with_projects(vec![make_project("a")]);
+        let searchable = vec![
+            make_search_result("s1", vec!["JWT認証の実装", "テスト書いて"]),
+            make_search_result("s2", vec!["デプロイの設定"]),
+        ];
+        app.enter_global_search(searchable);
+        app.global_search_push('認');
+        app.global_search_push('証');
+        assert!(app.global_search_filtered.iter().any(|r| r.session_id == "s1"));
+    }
+
+    #[test]
+    fn global_search_navigate() {
+        let mut app = App::with_projects(vec![make_project("a")]);
+        let searchable = vec![
+            make_search_result("s1", vec!["a"]),
+            make_search_result("s2", vec!["b"]),
+        ];
+        app.enter_global_search(searchable);
+        assert_eq!(app.global_search_selected, 0);
+        app.navigate_down();
+        assert_eq!(app.global_search_selected, 1);
+        app.navigate_up();
+        assert_eq!(app.global_search_selected, 0);
+    }
+
+    #[test]
+    fn global_search_copy_resume_cmd() {
+        let mut app = App::with_projects(vec![make_project("a")]);
+        let searchable = vec![
+            make_search_result("abc-123-def", vec!["hello"]),
+        ];
+        app.enter_global_search(searchable);
+        let cmd = app.get_resume_command();
+        assert_eq!(cmd, Some("claude --resume abc-123-def".to_string()));
     }
 
     #[test]
