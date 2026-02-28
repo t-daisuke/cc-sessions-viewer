@@ -63,6 +63,18 @@ impl Message {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub session_id: String,
+    pub project_path: String,
+    pub dir_name: String,
+    pub git_branch: String,
+    pub created_at: String,
+    pub prompts: Vec<String>,
+    pub best_match_prompt: String,
+    pub best_match_indices: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeFilter {
     Yesterday,

@@ -38,9 +38,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         frame.render_widget(search_bar, chunks[2]);
     } else {
         let help_text = match app.screen {
-            Screen::ProjectList => "Enter: Open  q: Quit  j/k: Navigate  d/u: Half Page  /: Search",
+            Screen::ProjectList => "Enter: Open  s: Global Search  q: Quit  j/k: Navigate  /: Filter",
             Screen::SessionList => "Enter: Open  Esc: Back  j/k: Navigate  d/u: Half Page  Tab: Filter  /: Search",
             Screen::SessionDetail => "Esc: Back  j/k: Scroll  d/u: Half Page  g/G: Top/Bottom",
+            Screen::GlobalSearch => "Enter: Detail  y: Copy resume cmd  Esc: Back  j/k: Navigate",
         };
         let help = Paragraph::new(Line::from(vec![Span::styled(
             help_text,
@@ -54,6 +55,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::ProjectList => draw_project_list(frame, app, chunks[1]),
         Screen::SessionList => draw_session_list(frame, app, chunks[1]),
         Screen::SessionDetail => draw_session_detail(frame, app, chunks[1]),
+        Screen::GlobalSearch => draw_global_search(frame, app, chunks[1]),
     }
 }
 
@@ -68,10 +70,15 @@ fn draw_project_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             .add_modifier(Modifier::BOLD),
     );
 
+    // borders(2) + header(1) = 3
+    let visible_height = (area.height as usize).saturating_sub(3);
+
     let rows: Vec<Row> = app
         .displayed_projects
         .iter()
         .enumerate()
+        .skip(app.project_scroll_offset)
+        .take(visible_height)
         .map(|(i, project)| {
             let style = if i == app.selected_project {
                 Style::default()
@@ -156,10 +163,15 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             .add_modifier(Modifier::BOLD),
     );
 
+    // borders(2) + header(1) = 3
+    let visible_height = (inner_chunks[2].height as usize).saturating_sub(3);
+
     let rows: Vec<Row> = app
         .filtered_sessions
         .iter()
         .enumerate()
+        .skip(app.session_scroll_offset)
+        .take(visible_height)
         .map(|(i, session)| {
             let style = if i == app.selected_session {
                 Style::default()
@@ -283,4 +295,188 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         );
 
     frame.render_widget(paragraph, inner_chunks[1]);
+}
+
+fn draw_global_search(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let inner_chunks = Layout::vertical([
+        Constraint::Length(1), // search input
+        Constraint::Min(0),   // results
+    ])
+    .split(area);
+
+    // Search input
+    let search_line = Line::from(vec![
+        Span::styled(
+            " Search: ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(&app.global_search_query, Style::default().fg(Color::White)),
+        Span::styled("█", Style::default().fg(Color::Cyan)),
+    ]);
+    frame.render_widget(Paragraph::new(search_line), inner_chunks[0]);
+
+    // Results table
+    let header = Row::new(vec![
+        Cell::from("Time"),
+        Cell::from("Project"),
+        Cell::from("Branch"),
+        Cell::from("Prompt"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    // borders(2) + header(1) = 3
+    let visible_height = (inner_chunks[1].height as usize).saturating_sub(3);
+
+    let rows: Vec<Row> = app
+        .global_search_filtered
+        .iter()
+        .enumerate()
+        .skip(app.global_search_scroll_offset)
+        .take(visible_height)
+        .map(|(i, result)| {
+            let style = if i == app.global_search_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let time_str = format_relative_time(&result.created_at);
+
+            let project_short = result
+                .project_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&result.project_path);
+
+            let prompt = if result.best_match_prompt.is_empty() {
+                result.prompts.first().cloned().unwrap_or_default()
+            } else {
+                result.best_match_prompt.clone()
+            };
+            let prompt = prompt.replace('\n', " ");
+            let prompt_line = build_match_snippet(&prompt, &result.best_match_indices, 60);
+
+            Row::new(vec![
+                Cell::from(time_str),
+                Cell::from(project_short.to_string()),
+                Cell::from(result.git_branch.clone()),
+                Cell::from(prompt_line),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let title = format!(
+        " Global Search ({} results) ",
+        app.global_search_filtered.len()
+    );
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(12),
+            Constraint::Percentage(20),
+            Constraint::Percentage(18),
+            Constraint::Percentage(50),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    frame.render_widget(table, inner_chunks[1]);
+}
+
+fn build_match_snippet<'a>(prompt: &str, indices: &[usize], max_width: usize) -> Line<'a> {
+    let chars: Vec<char> = prompt.chars().collect();
+    let prompt_len = chars.len();
+
+    if indices.is_empty() || prompt_len == 0 {
+        let display: String = chars.iter().take(max_width).collect();
+        if prompt_len > max_width {
+            return Line::from(format!("{}...", display));
+        }
+        return Line::from(display);
+    }
+
+    let first_match = *indices.first().unwrap();
+    let last_match = *indices.last().unwrap();
+    let match_center = (first_match + last_match) / 2;
+
+    let half_width = max_width / 2;
+    let start = if match_center > half_width {
+        (match_center - half_width).min(prompt_len.saturating_sub(max_width))
+    } else {
+        0
+    };
+    let end = (start + max_width).min(prompt_len);
+
+    let match_set: std::collections::HashSet<usize> = indices.iter().copied().collect();
+
+    let mut spans: Vec<Span> = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled("...", Style::default().fg(Color::DarkGray)));
+    }
+
+    let mut current_text = String::new();
+    let mut current_is_match = false;
+
+    for i in start..end {
+        let is_match = match_set.contains(&i);
+        if is_match != current_is_match && !current_text.is_empty() {
+            let style = if current_is_match {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(std::mem::take(&mut current_text), style));
+        }
+        current_text.push(chars[i]);
+        current_is_match = is_match;
+    }
+
+    if !current_text.is_empty() {
+        let style = if current_is_match {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(current_text, style));
+    }
+
+    if end < prompt_len {
+        spans.push(Span::styled("...", Style::default().fg(Color::DarkGray)));
+    }
+
+    Line::from(spans)
+}
+
+pub fn format_relative_time(iso: &str) -> String {
+    use chrono::{DateTime, Utc};
+    let dt: DateTime<Utc> = match iso.parse() {
+        Ok(d) => d,
+        Err(_) => return iso.to_string(),
+    };
+    let now = Utc::now();
+    let dur = now.signed_duration_since(dt);
+    if dur.num_hours() < 24 {
+        dt.format("%H:%M").to_string()
+    } else if dur.num_days() < 7 {
+        format!("{} days ago", dur.num_days())
+    } else {
+        dt.format("%b %d").to_string()
+    }
 }
