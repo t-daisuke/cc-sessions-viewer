@@ -256,15 +256,108 @@ pub(crate) fn list_sessions_in(project_name: &str, projects_dir: &Path) -> Resul
         return Ok(Vec::new());
     }
 
-    let index_path = project_dir.join("sessions-index.json");
-    if index_path.exists() {
-        let sessions = list_sessions_from_index(project_name, &index_path);
-        if !sessions.is_empty() {
-            return Ok(sessions);
+    // Collect .jsonl files on disk
+    let disk_files: std::collections::HashSet<String> = fs::read_dir(&project_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+                path.file_stem().map(|s| s.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Build index lookup if sessions-index.json exists
+    let index_map: std::collections::HashMap<String, SessionInfo> = {
+        let index_path = project_dir.join("sessions-index.json");
+        if index_path.exists() {
+            list_sessions_from_index(project_name, &index_path)
+                .into_iter()
+                .map(|s| (s.session_id.clone(), s))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        }
+    };
+
+    let mut sessions = Vec::new();
+
+    for session_id in &disk_files {
+        if let Some(info) = index_map.get(session_id) {
+            // Index entry exists and file is on disk → use rich index metadata
+            sessions.push(info.clone());
+        } else {
+            // File on disk but not in index → scan the file
+            let path = project_dir.join(format!("{}.jsonl", session_id));
+            if let Some(info) = scan_session_file(session_id, project_name, &path) {
+                sessions.push(info);
+            }
         }
     }
 
-    Ok(list_sessions_from_files(project_name, &project_dir))
+    // Sort by timestamp descending (newest first)
+    sessions.sort_by(|a, b| {
+        let ta = a.timestamp.unwrap_or(DateTime::<Utc>::MIN_UTC);
+        let tb = b.timestamp.unwrap_or(DateTime::<Utc>::MIN_UTC);
+        tb.cmp(&ta)
+    });
+
+    Ok(sessions)
+}
+
+/// Scan a single .jsonl file to extract session metadata.
+fn scan_session_file(session_id: &str, project_name: &str, path: &Path) -> Option<SessionInfo> {
+    let content = fs::read_to_string(path).ok()?;
+
+    let mut preview = String::new();
+    let mut timestamp: Option<DateTime<Utc>> = None;
+    let mut git_branch = String::new();
+    let mut message_count: usize = 0;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let obj: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let msg_type = obj.get("type").and_then(Value::as_str).unwrap_or("");
+        if msg_type == "user" || msg_type == "assistant" {
+            message_count += 1;
+        }
+
+        if msg_type == "user" && preview.is_empty() {
+            let msg_content = obj
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
+            preview = truncate_str(&extract_text_from_content(&msg_content), 200);
+            timestamp = parse_timestamp(obj.get("timestamp").and_then(Value::as_str));
+            git_branch = obj
+                .get("gitBranch")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+        }
+    }
+
+    Some(SessionInfo {
+        session_id: session_id.to_string(),
+        project_name: project_name.to_string(),
+        preview,
+        timestamp,
+        message_count,
+        git_branch,
+        summary: String::new(),
+    })
 }
 
 /// Parse a single entry from sessions-index.json into a SessionInfo.
@@ -329,83 +422,6 @@ fn list_sessions_from_index(project_name: &str, index_path: &Path) -> Vec<Sessio
         .collect();
 
     // Sort by timestamp descending (newest first)
-    sessions.sort_by(|a, b| {
-        let ta = a.timestamp.unwrap_or(DateTime::<Utc>::MIN_UTC);
-        let tb = b.timestamp.unwrap_or(DateTime::<Utc>::MIN_UTC);
-        tb.cmp(&ta)
-    });
-
-    sessions
-}
-
-fn list_sessions_from_files(project_name: &str, project_dir: &Path) -> Vec<SessionInfo> {
-    let mut sessions = Vec::new();
-
-    let entries = match fs::read_dir(project_dir) {
-        Ok(rd) => rd,
-        Err(_) => return sessions,
-    };
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
-            let session_id = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            let mut preview = String::new();
-            let mut timestamp: Option<DateTime<Utc>> = None;
-            let mut git_branch = String::new();
-            let mut message_count: usize = 0;
-
-            if let Ok(content) = fs::read_to_string(&path) {
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let obj: Value = match serde_json::from_str(line) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-
-                    let msg_type = obj.get("type").and_then(Value::as_str).unwrap_or("");
-                    if msg_type == "user" || msg_type == "assistant" {
-                        message_count += 1;
-                    }
-
-                    if msg_type == "user" && preview.is_empty() {
-                        let msg_content = obj
-                            .get("message")
-                            .and_then(|m| m.get("content"))
-                            .cloned()
-                            .unwrap_or(Value::String(String::new()));
-                        preview = truncate_str(&extract_text_from_content(&msg_content), 200);
-                        timestamp =
-                            parse_timestamp(obj.get("timestamp").and_then(Value::as_str));
-                        git_branch = obj
-                            .get("gitBranch")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                    }
-                }
-            }
-
-            sessions.push(SessionInfo {
-                session_id,
-                project_name: project_name.to_string(),
-                preview,
-                timestamp,
-                message_count,
-                git_branch,
-                summary: String::new(),
-            });
-        }
-    }
-
-    // Sort by timestamp descending
     sessions.sort_by(|a, b| {
         let ta = a.timestamp.unwrap_or(DateTime::<Utc>::MIN_UTC);
         let tb = b.timestamp.unwrap_or(DateTime::<Utc>::MIN_UTC);
@@ -928,12 +944,122 @@ mod tests {
             serde_json::to_string(&index).unwrap(),
         )
         .unwrap();
+        // The .jsonl file must exist on disk for the index entry to be included
+        fs::write(project_dir.join("sess-1.jsonl"), "").unwrap();
 
         let result = list_sessions_in("my-project", tmp.path()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].session_id, "sess-1");
         assert_eq!(result[0].preview, "First prompt");
         assert_eq!(result[0].message_count, 3);
+    }
+
+    #[test]
+    fn list_sessions_in_index_entry_without_file_excluded() {
+        let tmp = TempDir::new().unwrap();
+        let project_dir = tmp.path().join("my-project");
+        fs::create_dir(&project_dir).unwrap();
+
+        let index = json!({
+            "entries": [
+                {
+                    "sessionId": "deleted-sess",
+                    "firstPrompt": "Gone",
+                    "created": "2024-01-15T10:30:00Z",
+                    "messageCount": 5,
+                }
+            ]
+        });
+        fs::write(
+            project_dir.join("sessions-index.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
+        // No .jsonl file on disk
+
+        let result = list_sessions_in("my-project", tmp.path()).unwrap();
+        assert!(result.is_empty(), "Index entries without disk files should be excluded");
+    }
+
+    #[test]
+    fn list_sessions_in_file_not_in_index_included() {
+        let tmp = TempDir::new().unwrap();
+        let project_dir = tmp.path().join("my-project");
+        fs::create_dir(&project_dir).unwrap();
+
+        // Index with no entries
+        let index = json!({ "entries": [] });
+        fs::write(
+            project_dir.join("sessions-index.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
+
+        // A .jsonl file not in the index
+        let jsonl = r#"{"type":"user","timestamp":"2024-02-01T12:00:00Z","message":{"content":"new session"}}"#;
+        fs::write(project_dir.join("new-sess.jsonl"), jsonl).unwrap();
+
+        let result = list_sessions_in("my-project", tmp.path()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].session_id, "new-sess");
+        assert_eq!(result[0].preview, "new session");
+    }
+
+    #[test]
+    fn list_sessions_in_merge_index_and_disk() {
+        let tmp = TempDir::new().unwrap();
+        let project_dir = tmp.path().join("my-project");
+        fs::create_dir(&project_dir).unwrap();
+
+        let index = json!({
+            "entries": [
+                {
+                    "sessionId": "indexed-sess",
+                    "firstPrompt": "Indexed prompt",
+                    "created": "2024-01-15T10:30:00Z",
+                    "messageCount": 10,
+                    "gitBranch": "feature",
+                    "summary": "From index"
+                },
+                {
+                    "sessionId": "deleted-sess",
+                    "firstPrompt": "Deleted",
+                    "created": "2024-01-10T10:30:00Z",
+                    "messageCount": 2,
+                }
+            ]
+        });
+        fs::write(
+            project_dir.join("sessions-index.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
+
+        // indexed-sess exists on disk
+        fs::write(project_dir.join("indexed-sess.jsonl"), "").unwrap();
+        // deleted-sess does NOT exist on disk
+
+        // disk-only-sess exists on disk but not in index
+        let jsonl = r#"{"type":"user","timestamp":"2024-02-01T12:00:00Z","message":{"content":"disk only"}}"#;
+        fs::write(project_dir.join("disk-only-sess.jsonl"), jsonl).unwrap();
+
+        let result = list_sessions_in("my-project", tmp.path()).unwrap();
+        assert_eq!(result.len(), 2);
+
+        let ids: Vec<&str> = result.iter().map(|s| s.session_id.as_str()).collect();
+        assert!(ids.contains(&"indexed-sess"), "Indexed session with file should be present");
+        assert!(ids.contains(&"disk-only-sess"), "Disk-only session should be present");
+        assert!(!ids.contains(&"deleted-sess"), "Deleted session should be excluded");
+
+        // Indexed session should use index metadata
+        let indexed = result.iter().find(|s| s.session_id == "indexed-sess").unwrap();
+        assert_eq!(indexed.preview, "Indexed prompt");
+        assert_eq!(indexed.message_count, 10);
+        assert_eq!(indexed.summary, "From index");
+
+        // Disk-only session should use scanned metadata
+        let disk_only = result.iter().find(|s| s.session_id == "disk-only-sess").unwrap();
+        assert_eq!(disk_only.preview, "disk only");
     }
 
     #[test]
