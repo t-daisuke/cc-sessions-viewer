@@ -98,17 +98,17 @@ Enter: Detail  y: Copy resume cmd  Esc: Back  j/k: Navigate
 
 ## Installation
 
+### Homebrew
+
 ```bash
-cargo install --path .
+brew tap t-daisuke/tap
+brew install cc-sessions-viewer
 ```
 
-これにより `~/.cargo/bin/cc-sessions-viewer` にバイナリがインストールされ、どこからでも `cc-sessions-viewer` コマンドで起動できます（`~/.cargo/bin` がPATHに含まれている必要があります）。
-
-ビルドのみ行う場合：
+### Build from source
 
 ```bash
-cargo build --release
-# バイナリは target/release/cc-sessions-viewer に生成されます
+cargo install --path .
 ```
 
 ## Usage
